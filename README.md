@@ -47,15 +47,7 @@
 
 ## 快速开始
 
-### 1. 配置 SDK 路径
-
-编辑 `android_launcher.py` 第 25 行，将 `SDK_HOME` 改为你的 Android SDK 安装路径：
-
-```python
-SDK_HOME = r"D:\AndroidSdk"
-```
-
-### 2. 启动
+### 启动
 
 双击 `启动模拟器.bat`，或在命令行运行：
 
