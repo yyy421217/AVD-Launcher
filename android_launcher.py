@@ -22,16 +22,8 @@ import urllib.request
 import webbrowser
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-# ===== SDK 路径配置 =====
-SDK_HOME = r"D:\AndroidSdk"
-EMULATOR = os.path.join(SDK_HOME, "emulator", "emulator.exe")
-ADB = os.path.join(SDK_HOME, "platform-tools", "adb.exe")
-AVDMANAGER = os.path.join(SDK_HOME, "cmdline-tools", "latest", "bin", "avdmanager.bat")
-SDKMANAGER = os.path.join(SDK_HOME, "cmdline-tools", "latest", "bin", "sdkmanager.bat")
-ROOTAVD_DIR = os.path.join(SDK_HOME, "rootAVD")
-GIT_BASH = r"C:\Program Files\Git\bin\bash.exe"
 
-# ===== 启动器设置（AVD 安装路径等，持久化） =====
+# ===== 启动器设置（持久化：AVD 安装路径、SDK 路径等） =====
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".android", "launcher_settings.json")
 _DEFAULT_AVD_HOME = os.path.join(os.path.expanduser("~"), ".android", "avd")
 
@@ -54,6 +46,79 @@ def save_settings(settings):
     except Exception:
         pass
 
+
+# ===== SDK 路径自动检测 (ANDROID_HOME) =====
+def _is_valid_sdk(path):
+    """判断目录是否像一个有效的 Android SDK 根目录"""
+    if not path or not os.path.isdir(path):
+        return False
+    for sub in ("cmdline-tools", "emulator", "platform-tools", "system-images", "build-tools", "add-ons"):
+        if os.path.isdir(os.path.join(path, sub)):
+            return True
+    return False
+
+
+def detect_sdk_home():
+    """自动检测 Android SDK (ANDROID_HOME) 位置。
+
+    优先级：
+      1. 已保存的设置 launcher_settings.json -> sdk_home
+      2. 环境变量 ANDROID_HOME / ANDROID_SDK_ROOT
+      3. Android Studio 默认安装位置及常见手动安装位置
+      4. 回退到 D:\\AndroidSdk（保持向后兼容；自检对话框会引导补齐缺失组件）
+    命中有效路径后持久化保存，避免下次重复探测。
+    """
+    settings = load_settings()
+    saved = settings.get("sdk_home")
+    if saved and _is_valid_sdk(saved):
+        return saved
+
+    candidates = []
+    # 2. 环境变量
+    for var in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        v = os.environ.get(var)
+        if v:
+            candidates.append(v)
+    # 3 & 4. 常见默认位置（Android Studio 默认 + 常见手动安装盘符）
+    local_app = os.environ.get("LOCALAPPDATA")
+    userprofile = os.environ.get("USERPROFILE")
+    common = [
+        os.path.join(local_app, "Android", "Sdk") if local_app else None,
+        os.path.join(userprofile, "AppData", "Local", "Android", "Sdk") if userprofile else None,
+        r"C:\Android\Sdk",
+        r"C:\AndroidSdk",
+        r"D:\AndroidSdk",
+        r"D:\Android\Sdk",
+        r"E:\AndroidSdk",
+        r"E:\Android\Sdk",
+    ]
+    candidates += [c for c in common if c]
+
+    seen = set()
+    for c in candidates:
+        if not c or c in seen:
+            continue
+        seen.add(c)
+        if _is_valid_sdk(c):
+            settings["sdk_home"] = c
+            save_settings(settings)
+            return c
+
+    # 5. 回退（即使无效也返回原默认值；自检对话框会引导补齐）
+    return r"D:\AndroidSdk"
+
+
+# ===== SDK 路径配置 =====
+SDK_HOME = detect_sdk_home()
+# 同步到环境变量，供子进程继承
+os.environ["ANDROID_HOME"] = SDK_HOME
+os.environ["ANDROID_SDK_ROOT"] = SDK_HOME
+EMULATOR = os.path.join(SDK_HOME, "emulator", "emulator.exe")
+ADB = os.path.join(SDK_HOME, "platform-tools", "adb.exe")
+AVDMANAGER = os.path.join(SDK_HOME, "cmdline-tools", "latest", "bin", "avdmanager.bat")
+SDKMANAGER = os.path.join(SDK_HOME, "cmdline-tools", "latest", "bin", "sdkmanager.bat")
+ROOTAVD_DIR = os.path.join(SDK_HOME, "rootAVD")
+GIT_BASH = r"C:\Program Files\Git\bin\bash.exe"
 
 # 当前 AVD 安装路径（可由用户自定义）
 AVD_USER_HOME = load_settings().get("avd_home", _DEFAULT_AVD_HOME)
@@ -1398,6 +1463,8 @@ class LauncherApp(tk.Tk):
             self.state("zoomed")
         except Exception:
             pass
+        # 输出自动检测到的 SDK 路径
+        self.log(f"📁 SDK 路径：{SDK_HOME}")
         self.after(120, self.refresh_avds)
         self.after(300, self._poll_status)
         # 启动自检：检测并下载缺失组件
@@ -1467,12 +1534,15 @@ class LauncherApp(tk.Tk):
         top_inner = tk.Frame(top_row, bg=CARD)
         top_inner.pack(fill="x", padx=16, pady=10)
 
-        # SDK 标签（Chip）
+        # SDK 标签（Chip）：路径用 StringVar 绑定，跟随检测结果变化
+        self.sdk_path_var = tk.StringVar(value=SDK_HOME)
         sdk_chip = tk.Frame(top_inner, bg=PRIMARY_SOFT, highlightthickness=1,
                             highlightbackground=PRIMARY)
         sdk_chip.pack(side="left")
-        tk.Label(sdk_chip, text=f"📁 SDK  {SDK_HOME}", bg=PRIMARY_SOFT, fg=PRIMARY,
-                 font=CN_SM, padx=10, pady=5).pack()
+        tk.Label(sdk_chip, text="📁 SDK", bg=PRIMARY_SOFT, fg=PRIMARY,
+                 font=CN_SM, padx=(10, 4), pady=5).pack(side="left")
+        tk.Label(sdk_chip, textvariable=self.sdk_path_var, bg=PRIMARY_SOFT, fg=PRIMARY,
+                 font=CN_SM, padx=(0, 10), pady=5).pack(side="left")
         # 保留 AVD 路径变量（设置功能仍可用，但从 UI 删除入口，通过菜单访问）
         self.avd_path_var = tk.StringVar(value=AVD_USER_HOME)
 
