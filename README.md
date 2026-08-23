@@ -49,11 +49,7 @@
 
 ### 启动
 
-双击 `启动模拟器.bat`，或在命令行运行：
-
-```bash
-python android_launcher.py
-```
+双击 `AndroidLauncher.exe`
 
 ## 项目结构
 
