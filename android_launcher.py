@@ -1540,9 +1540,9 @@ class LauncherApp(tk.Tk):
                             highlightbackground=PRIMARY)
         sdk_chip.pack(side="left")
         tk.Label(sdk_chip, text="📁 SDK", bg=PRIMARY_SOFT, fg=PRIMARY,
-                 font=CN_SM, padx=(10, 4), pady=5).pack(side="left")
+                 font=CN_SM, pady=5).pack(side="left", padx=(10, 4))
         tk.Label(sdk_chip, textvariable=self.sdk_path_var, bg=PRIMARY_SOFT, fg=PRIMARY,
-                 font=CN_SM, padx=(0, 10), pady=5).pack(side="left")
+                 font=CN_SM, pady=5).pack(side="left", padx=(0, 10))
         # 保留 AVD 路径变量（设置功能仍可用，但从 UI 删除入口，通过菜单访问）
         self.avd_path_var = tk.StringVar(value=AVD_USER_HOME)
 
