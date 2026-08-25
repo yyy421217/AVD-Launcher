@@ -339,9 +339,24 @@ def list_pixel_devices():
     return [(i, n) for (i, n) in profiles if "pixel" in i.lower()]
 
 
+def installed_image_pkg(api):
+    """返回已安装镜像的完整包 id（如 system-images;android-37.0;google_apis;x86_64）。
+
+    兼容带补丁号的目录名（android-37.0 等）。无则返回 None。
+    """
+    base = os.path.join(SDK_HOME, "system-images")
+    if not os.path.isdir(base):
+        return None
+    for d in os.listdir(base):
+        # android-37 后接词边界：匹配 android-37 / android-37.0，排除 android-370
+        if re.match(rf"android-{api}\b", d) and os.path.isdir(os.path.join(base, d, "google_apis", "x86_64")):
+            return f"system-images;{d};google_apis;x86_64"
+    return None
+
+
 def system_image_installed(api):
-    """检查 google_apis x86_64 系统镜像是否已安装"""
-    return os.path.isdir(os.path.join(SDK_HOME, "system-images", f"android-{api}", "google_apis", "x86_64"))
+    """检查 google_apis x86_64 系统镜像是否已安装（兼容补丁号目录如 android-37.0）"""
+    return installed_image_pkg(api) is not None
 
 
 def list_installed_images():
@@ -748,7 +763,14 @@ def make_button(parent, text, command, style="primary", padx=18, pady=8, radius=
             try:
                 command()
             except Exception as err:
-                print("button cmd error:", err)
+                import traceback
+                tb = traceback.format_exc()
+                print("button cmd error:", err, "\n", tb)
+                try:
+                    from tkinter import messagebox as _mb
+                    _mb.showerror("按钮执行出错", f"{err}\n\n{tb}")
+                except Exception:
+                    pass
 
     c.bind("<Enter>", on_enter)
     c.bind("<Leave>", on_leave)
@@ -2739,13 +2761,18 @@ class PixelWizardDialog(tk.Toplevel):
         self.name_var.set(f"{self.selected_device[0]}_android{api}")
 
     def _download_image(self, api, btn):
-        """用 sdkmanager 下载系统镜像"""
+        """用 sdkmanager 下载系统镜像（自动接受许可，使用在线探测到的精确包名）"""
         btn.config(text="下载中…", fg=MUTED)
-        pkg = f"system-images;android-{api};google_apis;x86_64"
+        # 优先用在线探测到的完整包名（如 android-37.0，带补丁号），
+        # 否则回退到 android-{api}（适用于旧版无补丁号的 API）
+        pkg = (self.online_pkgs or {}).get(api) or f"system-images;android-{api};google_apis;x86_64"
         self.dlog(f"开始下载 {pkg} …")
 
         def runner():
-            code = run_stream([SDKMANAGER, pkg], self.dlog)
+            # 用 run_sdkmanager_install：先跑 --licenses 自动接受许可，
+            # 再安装包，避免新镜像因许可未接受或包名不精确而失败
+            results = run_sdkmanager_install([pkg], self.dlog)
+            code = results[0][1] if results else -1
             if code == 0:
                 self.dlog(f"✓ {pkg} 下载完成！")
                 self.dlog("✓ 已完成!")
@@ -2781,6 +2808,8 @@ class PixelWizardDialog(tk.Toplevel):
                 pass
 
     def do_create(self):
+        if getattr(self, "_creating", False):
+            return
         if not self.selected_device:
             messagebox.showwarning("提示", "请先选择 Pixel 机型。", parent=self)
             return
@@ -2794,16 +2823,20 @@ class PixelWizardDialog(tk.Toplevel):
             messagebox.showerror("错误", "名称只能包含字母、数字、下划线、点、短横线。", parent=self)
             return
         if not system_image_installed(selected_api):
-            messagebox.showwarning("提示", f"Android {ANDROID_VERSIONS[selected_api]} 的系统镜像尚未下载，请先点击「⬇ 下载」。", parent=self)
+            messagebox.showwarning("提示", f"Android {self._label_for_api(selected_api)} 的系统镜像尚未下载，请先点击「⬇ 下载」。", parent=self)
             return
-        img = f"system-images;android-{selected_api};google_apis;x86_64"
+        # 使用实际已安装镜像的精确包名（如 android-37.0），兼容补丁号
+        img = installed_image_pkg(selected_api) \
+            or (self.online_pkgs or {}).get(selected_api) \
+            or f"system-images;android-{selected_api};google_apis;x86_64"
         # 存储位置：用户可单独指定，留空则用默认 AVD 目录
         loc = self.loc_var.get().strip()
         avd_dir = None
         if loc:
             avd_dir = os.path.join(loc, name + ".avd")
             os.makedirs(loc, exist_ok=True)
-        self.create_btn.config(state="disabled", text="创建中…")
+        self._creating = True
+        self.create_btn._btn.config(state="disabled", text="创建中…")
         self.dlog(f"创建 AVD：{name}")
         self.dlog(f"  设备：{dev_name} ({dev_id})")
         self.dlog(f"  镜像：{img}")
@@ -2813,12 +2846,20 @@ class PixelWizardDialog(tk.Toplevel):
             args += ["-p", avd_dir]
 
         def worker():
-            proc = subprocess.Popen(
-                args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                stdin=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
-            out, _ = proc.communicate(input=b"no\n", timeout=300)
-            text = out.decode("utf-8", errors="replace")
-            self.after(0, lambda: self._on_done(proc.returncode, text))
+            try:
+                proc = subprocess.Popen(
+                    args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    stdin=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
+                out, _ = proc.communicate(input=b"no\n", timeout=300)
+                text = out.decode("utf-8", errors="replace")
+                self.after(0, lambda: self._on_done(proc.returncode, text))
+            except Exception as e:
+                msg = f"[错误] 创建线程异常：{e}"
+                self.after(0, lambda: (
+                    self.dlog(msg),
+                    self.create_btn._btn.config(state="normal", text="创建 AVD"),
+                    setattr(self, "_creating", False),
+                ))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2831,7 +2872,8 @@ class PixelWizardDialog(tk.Toplevel):
             self.after(800, lambda: (self.on_created(), self.destroy()))
         else:
             self.dlog(f"[失败] 退出码 {code}")
-            self.create_btn.config(state="normal", text="创建 AVD")
+            self._creating = False
+            self.create_btn._btn.config(state="normal", text="创建 AVD")
 
 
 # ============================================================
@@ -3216,7 +3258,7 @@ class CustomImageImportDialog(tk.Toplevel):
             avd_dir = os.path.join(loc, name + ".avd")
             os.makedirs(loc, exist_ok=True)
 
-        self.import_btn.config(state="disabled", text="导入中…")
+        self.import_btn._btn.config(state="disabled", text="导入中…")
         self.dlog(f"目标目录：{dest}")
         self.dlog(f"设备：{dev_name} ({dev_id})  AVD：{name}")
         self.dlog(f"存储位置：{avd_dir if avd_dir else '（默认 AVD 目录）'}")
@@ -3304,7 +3346,7 @@ class CustomImageImportDialog(tk.Toplevel):
             self.after(1000, lambda: (self.on_created(), self.destroy()))
         else:
             self.dlog(f"✗ 失败，退出码 {code}")
-            self.import_btn.config(state="normal", text="导入并创建 AVD")
+            self.import_btn._btn.config(state="normal", text="导入并创建 AVD")
 
 
 # ============================================================
